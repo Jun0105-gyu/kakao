@@ -1,0 +1,4 @@
+cd ~
+git clone https://github.com/Jun0105-gyu/capstone.git
+cd capstone/sleep
+python3 app.py
