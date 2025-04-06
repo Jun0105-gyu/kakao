@@ -1,31 +1,35 @@
+from flask import Flask, jsonify
 import cv2
-import time
 import mediapipe as mp
 import numpy as np
-from flask import Flask, jsonify
+import threading
+import time
 
 app = Flask(__name__)
+drowsy = False
 
-# MediaPipe 초기화
+# MediaPipe 설정
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
 
-# 졸음 상태 변수
-drowsy = False
+# EAR 계산용 눈 좌표 인덱스
+LEFT_EYE = [33, 160, 158, 133, 153, 144]
+RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
-# EAR 계산 함수
-def calculate_ear(landmarks, eye_indices):
-    points = [landmarks[i] for i in eye_indices]
-    vertical1 = np.linalg.norm(np.array(points[1]) - np.array(points[5]))
-    vertical2 = np.linalg.norm(np.array(points[2]) - np.array(points[4]))
-    horizontal = np.linalg.norm(np.array(points[0]) - np.array(points[3]))
+def eye_aspect_ratio(landmarks, eye_indices):
+    p = [np.array([landmarks[i][0], landmarks[i][1]]) for i in range(len(eye_indices))]
+    vertical1 = np.linalg.norm(p[1] - p[5])
+    vertical2 = np.linalg.norm(p[2] - p[4])
+    horizontal = np.linalg.norm(p[0] - p[3])
     ear = (vertical1 + vertical2) / (2.0 * horizontal)
     return ear
 
-# 졸음 감지 루프
 def detect_drowsiness_loop():
     global drowsy
     cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 60)
 
     if not cap.isOpened():
         print("Camera failed to open!")
@@ -35,48 +39,51 @@ def detect_drowsiness_loop():
     EYE_AR_CONSEC_FRAMES = 30
     counter = 0
 
-    LEFT_EYE = [33, 160, 158, 133, 153, 144]
-    RIGHT_EYE = [362, 385, 387, 263, 373, 380]
-
     while True:
         ret, frame = cap.read()
         if not ret:
             continue
 
-        # 이미지 처리
+        h, w, _ = frame.shape
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = face_mesh.process(rgb)
 
         if results.multi_face_landmarks:
             for face_landmarks in results.multi_face_landmarks:
-                h, w, _ = frame.shape
                 landmarks = [(int(p.x * w), int(p.y * h)) for p in face_landmarks.landmark]
-
-                left_ear = calculate_ear(landmarks, LEFT_EYE)
-                right_ear = calculate_ear(landmarks, RIGHT_EYE)
+                left_ear = eye_aspect_ratio(landmarks, LEFT_EYE)
+                right_ear = eye_aspect_ratio(landmarks, RIGHT_EYE)
                 ear = (left_ear + right_ear) / 2.0
 
                 if ear < EYE_AR_THRESH:
                     counter += 1
                     if counter >= EYE_AR_CONSEC_FRAMES:
                         drowsy = True
-                        cv2.putText(frame, "DROWSY", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
+                        cv2.putText(frame, "DROWSY", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
                 else:
                     counter = 0
                     drowsy = False
 
-        # 영상 출력
-        cv2.imshow("Drowsiness Detection", frame)
+        # 카메라 화면 띄우기
+        cv2.imshow("Camera Feed", frame)
+
+        # 'q'를 누르면 종료
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
+# Flask API
 @app.route('/detect_drowsiness', methods=['GET'])
-def detect_drowsiness():
-    detect_drowsiness_loop()
-    return jsonify({'drowsy': drowsy})
+def detect_drowsiness_api():
+    return jsonify({"drowsy": drowsy})
 
 if __name__ == '__main__':
+    # 백그라운드에서 감지 쓰레드 실행
+    t = threading.Thread(target=detect_drowsiness_loop)
+    t.daemon = True
+    t.start()
+
+    # Flask 서버 실행
     app.run(host='0.0.0.0', port=5000)
