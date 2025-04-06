@@ -3,7 +3,6 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import threading
-import time
 
 app = Flask(__name__)
 drowsy = False
@@ -12,7 +11,6 @@ drowsy = False
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
 
-# EAR 계산용 눈 좌표 인덱스
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
@@ -38,6 +36,7 @@ def detect_drowsiness_loop():
     EYE_AR_THRESH = 0.23
     EYE_AR_CONSEC_FRAMES = 30
     counter = 0
+    was_drowsy = False  # 이전 상태 기록
 
     while True:
         ret, frame = cap.read()
@@ -55,35 +54,38 @@ def detect_drowsiness_loop():
                 right_ear = eye_aspect_ratio(landmarks, RIGHT_EYE)
                 ear = (left_ear + right_ear) / 2.0
 
+                print(f"EAR: {ear:.3f}")  # EAR 실시간 출력
+
                 if ear < EYE_AR_THRESH:
                     counter += 1
+                    print(f"Eyes closed frames: {counter}")
                     if counter >= EYE_AR_CONSEC_FRAMES:
                         drowsy = True
+                        if not was_drowsy:
+                            print("⚠️ Drowsiness detected!")
+                            was_drowsy = True
                         cv2.putText(frame, "DROWSY", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
                 else:
+                    if was_drowsy:
+                        print("Awake again.")
+                        was_drowsy = False
                     counter = 0
                     drowsy = False
 
-        # 카메라 화면 띄우기
+        # 영상 출력
         cv2.imshow("Camera Feed", frame)
-
-        # 'q'를 누르면 종료
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
-# Flask API
 @app.route('/detect_drowsiness', methods=['GET'])
 def detect_drowsiness_api():
     return jsonify({"drowsy": drowsy})
 
 if __name__ == '__main__':
-    # 백그라운드에서 감지 쓰레드 실행
     t = threading.Thread(target=detect_drowsiness_loop)
     t.daemon = True
     t.start()
-
-    # Flask 서버 실행
     app.run(host='0.0.0.0', port=5000)
